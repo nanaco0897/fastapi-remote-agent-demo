@@ -1,14 +1,28 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+import platform
+import resource
 from typing import List
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import engine, Base, get_db
-from app.schemas import TaskCreate, TaskUpdate, TaskResponse
+from app.schemas import TaskCreate, TaskUpdate, TaskResponse, MetricsResponse
 from app import crud
+
+APP_START_TIME = datetime.now(timezone.utc)
+
+def get_process_memory_mb() -> float:
+    """获取当前进程常驻内存 RSS (MB)"""
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if platform.system() == "Darwin":
+        return round(usage / (1024 * 1024), 2)
+    else:
+        return round(usage / 1024, 2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.start_time = datetime.now(timezone.utc)
     # 异步初始化数据表
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -30,6 +44,27 @@ async def health_check():
         "status": "healthy",
         "engine": "async-sqlite",
         "environment": "antigravity-remote-agent-ready"
+    }
+
+@app.get("/metrics", response_model=MetricsResponse, tags=["System"])
+async def get_system_metrics(db: AsyncSession = Depends(get_db)):
+    """获取系统性能监控指标与任务数据统计"""
+    now = datetime.now(timezone.utc)
+    start_time = getattr(app.state, "start_time", APP_START_TIME)
+    uptime = max(0.0, (now - start_time).total_seconds())
+
+    task_stats = await crud.get_task_metrics(db)
+
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(uptime, 2),
+        "start_time": start_time,
+        "system": {
+            "platform": platform.system(),
+            "python_version": platform.python_version(),
+            "memory_usage_mb": get_process_memory_mb()
+        },
+        "tasks": task_stats
     }
 
 @app.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, tags=["Tasks"])

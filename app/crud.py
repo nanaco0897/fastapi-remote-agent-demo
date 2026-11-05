@@ -1,5 +1,5 @@
-from typing import List, Optional
-from sqlalchemy import select
+from typing import List, Optional, Dict, Any
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import TaskItem
 from app.schemas import TaskCreate, TaskUpdate
@@ -45,3 +45,18 @@ async def delete_task(db: AsyncSession, task_id: int) -> bool:
     await db.delete(task)
     await db.commit()
     return True
+
+async def get_task_metrics(db: AsyncSession) -> Dict[str, Any]:
+    """获取任务总量及按状态分组统计"""
+    total_result = await db.execute(select(func.count(TaskItem.id)))
+    total_tasks = total_result.scalar_one() or 0
+
+    status_result = await db.execute(
+        select(TaskItem.status, func.count(TaskItem.id)).group_by(TaskItem.status)
+    )
+    by_status = {status: count for status, count in status_result.all()}
+
+    return {
+        "total": total_tasks,
+        "by_status": by_status
+    }
